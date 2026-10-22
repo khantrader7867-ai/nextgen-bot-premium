@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8936376779:AAHrC2nwO1uFGAGBX_uS-s8RaOz_YxfLw0U';
+const TELEGRAM_ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || process.env.ADMIN_CHAT_ID;
 const QUOTEX_REFERRAL_URL = 'https://broker-qx.pro/sign-up/?lid=2400438';
 
 // Data storage directory & file
@@ -55,6 +56,9 @@ function loadState() {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       state = { ...state, ...parsed };
+      if (!Array.isArray(state.adminChatIds)) {
+        state.adminChatIds = [];
+      }
     } else {
       // Seed initial sample historical data with device locks
       state.requests = [
@@ -89,6 +93,10 @@ function loadState() {
           decisionReason: 'Trader ID not registered through referral link',
         },
       ];
+      saveState();
+    }
+    if (TELEGRAM_ADMIN_CHAT_ID && !state.adminChatIds.includes(TELEGRAM_ADMIN_CHAT_ID)) {
+      state.adminChatIds.push(TELEGRAM_ADMIN_CHAT_ID);
       saveState();
     }
   } catch (err) {
@@ -130,6 +138,9 @@ function syncStateFromFile() {
             }
           }
         }
+        if (TELEGRAM_ADMIN_CHAT_ID && !state.adminChatIds.includes(TELEGRAM_ADMIN_CHAT_ID)) {
+          state.adminChatIds.push(TELEGRAM_ADMIN_CHAT_ID);
+        }
       }
     }
   } catch (err) {
@@ -157,7 +168,7 @@ async function callTelegram(method: string, body?: any) {
 }
 
 // Send verification request message to all known Telegram admin chats
-async function broadcastTraderRequest(request: TraderRequest) {
+async function broadcastTraderRequest(request: TraderRequest): Promise<boolean> {
   const shortToken = request.userToken ? request.userToken.slice(-6) : 'auto';
   const messageText = `⚡ <b>NEW QUOTEX TRADER ID SUBMISSION</b> ⚡
 ━━━━━━━━━━━━━━━━━━━━
@@ -183,23 +194,112 @@ async function broadcastTraderRequest(request: TraderRequest) {
     ],
   };
 
+  // If no admin chat IDs known, attempt a live harvest
+  if (state.adminChatIds.length === 0) {
+    try {
+      const recent = await callTelegram('getUpdates', { offset: 0, limit: 100 });
+      if (recent?.ok && Array.isArray(recent.result)) {
+        for (const update of recent.result) {
+          const chatId = update.message?.chat?.id || update.callback_query?.message?.chat?.id;
+          if (chatId && !state.adminChatIds.includes(chatId)) {
+            state.adminChatIds.push(chatId);
+          }
+        }
+        if (state.adminChatIds.length > 0) {
+          saveState();
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  if (state.adminChatIds.length === 0) {
+    console.warn(`[Telegram Broadcast] Trader ID ${request.traderId} saved as PENDING in database, but no admin chat IDs are registered yet. The admin must message @${botInfo?.username || 'NexGen_Access_Bot'} with /start or configure TELEGRAM_ADMIN_CHAT_ID.`);
+    request.notificationSent = false;
+    saveState();
+    return false;
+  }
+
   const sentMessageIds: { chatId: number | string; messageId: number }[] = [];
+  let atLeastOneSent = false;
 
   for (const chatId of state.adminChatIds) {
+    try {
+      const res = await callTelegram('sendMessage', {
+        chat_id: chatId,
+        text: messageText,
+        parse_mode: 'HTML',
+        reply_markup: inlineKeyboard,
+      });
+      if (res?.ok && res.result?.message_id) {
+        sentMessageIds.push({ chatId, messageId: res.result.message_id });
+        atLeastOneSent = true;
+        console.log(`[Telegram Broadcast] Notification sent successfully for Trader ID ${request.traderId} to chat ${chatId} (Msg ID: ${res.result.message_id})`);
+      } else {
+        console.warn(`[Telegram Broadcast] Failed to send notification to chat ${chatId}:`, res?.description || res?.error || res);
+      }
+    } catch (err) {
+      console.error(`[Telegram Broadcast] Error sending to chat ${chatId}:`, err);
+    }
+  }
+
+  request.telegramMessageIds = sentMessageIds;
+  request.notificationSent = atLeastOneSent;
+  saveState();
+  return atLeastOneSent;
+}
+
+// Flush pending verification requests to a specific admin chat
+async function flushPendingToChat(chatId: number | string) {
+  const pending = state.requests.filter((r) => r.status === 'pending');
+  if (pending.length === 0) return 0;
+
+  console.log(`[Telegram Bot] Delivering ${pending.length} pending request(s) to admin chat ${chatId}...`);
+  let delivered = 0;
+
+  for (const item of pending.slice(0, 10)) {
+    const shortToken = item.userToken ? item.userToken.slice(-6) : 'auto';
+    const messageText = `⚡ <b>PENDING QUOTEX TRADER ID VERIFICATION</b> ⚡
+━━━━━━━━━━━━━━━━━━━━
+🆔 <b>Trader ID:</b> <code>${item.traderId}</code>
+📋 <b>KYC Status:</b> ✅ Verified (National ID / Passport Approved)
+💰 <b>Deposit Confirmation Status:</b> ✅ Confirmed (Minimum $30+ Verified)
+🔒 <b>Device Security:</b> <code>Locked to Device (..${shortToken})</code>
+💎 <b>Access Tier:</b> Permanent VIP Lifetime Pass
+⏰ <b>Submitted At:</b> ${new Date(item.submittedAt).toUTCString()}
+🔗 <b>Affiliate Ref:</b> <code>${QUOTEX_REFERRAL_URL}</code>
+━━━━━━━━━━━━━━━━━━━━
+👇 <b>Select an action below:</b>`;
+
+    const inlineKeyboard = {
+      inline_keyboard: [
+        [
+          { text: '✅ Accept & Grant Lifetime Access', callback_data: `accept:${item.traderId}` },
+          { text: '❌ Reject', callback_data: `reject:${item.traderId}` },
+        ],
+        [
+          { text: '📊 Bot Statistics', callback_data: 'view_stats' },
+        ],
+      ],
+    };
+
     const res = await callTelegram('sendMessage', {
       chat_id: chatId,
       text: messageText,
       parse_mode: 'HTML',
       reply_markup: inlineKeyboard,
     });
+
     if (res?.ok && res.result?.message_id) {
-      sentMessageIds.push({ chatId, messageId: res.result.message_id });
+      if (!item.telegramMessageIds) item.telegramMessageIds = [];
+      item.telegramMessageIds.push({ chatId, messageId: res.result.message_id });
+      item.notificationSent = true;
+      delivered++;
     }
   }
-
-  request.telegramMessageIds = sentMessageIds;
-  request.notificationSent = true;
   saveState();
+  return delivered;
 }
 
 // Background poller to process Telegram bot updates (commands & inline button clicks)
@@ -210,9 +310,30 @@ async function checkTelegramBot() {
   const me = await callTelegram('getMe');
   if (me?.ok) {
     botInfo = me.result;
-    console.log(`Telegram Bot authenticated: @${botInfo.username} (${botInfo.first_name})`);
+    console.log(`[Telegram Bot] Authenticated: @${botInfo.username} (${botInfo.first_name}) [ID: ${botInfo.id}]`);
   } else {
-    console.warn('Could not authenticate Telegram Bot with current token:', me);
+    console.warn('[Telegram Bot] Could not authenticate with token:', me);
+  }
+
+  // Proactively check updates on startup to discover admin chat IDs
+  try {
+    const recent = await callTelegram('getUpdates', { offset: 0, limit: 100 });
+    if (recent?.ok && Array.isArray(recent.result)) {
+      let newlyDiscovered = 0;
+      for (const update of recent.result) {
+        const chatId = update.message?.chat?.id || update.callback_query?.message?.chat?.id;
+        if (chatId && !state.adminChatIds.includes(chatId)) {
+          state.adminChatIds.push(chatId);
+          newlyDiscovered++;
+        }
+      }
+      if (newlyDiscovered > 0) {
+        console.log(`[Telegram Bot] Proactively discovered ${newlyDiscovered} admin chat ID(s) from recent updates.`);
+        saveState();
+      }
+    }
+  } catch (err) {
+    console.warn('[Telegram Bot] Startup update harvest error:', err);
   }
 }
 
@@ -240,6 +361,9 @@ async function handleTelegramUpdates() {
             if (chatId && !state.adminChatIds.includes(chatId)) {
               state.adminChatIds.push(chatId);
               saveState();
+              console.log(`[Telegram Bot] Registered new Admin Chat ID: ${chatId} (@${update.message.from?.username || update.message.from?.first_name || 'Admin'})`);
+              // Deliver any queued pending requests to this new admin immediately
+              flushPendingToChat(chatId);
             }
 
             if (text === '/start' || text === '/help') {
@@ -261,8 +385,10 @@ Each Trader ID is locked to a single device to prevent multi-user sharing.
 Commands:
 /stats - View live statistics
 /users - View active locked lifetime users
-/unlock &lt;id&gt; - Release device lock for an ID
-/pending - View pending submissions`,
+/pending - View pending submissions
+/approve &lt;id&gt; - Manually approve a Trader ID
+/reject &lt;id&gt; - Manually reject a Trader ID
+/unlock &lt;id&gt; - Release device lock for an ID`,
                 parse_mode: 'HTML',
                 reply_markup: {
                   inline_keyboard: [
@@ -270,6 +396,10 @@ Commands:
                   ],
                 },
               });
+
+              if (pendingCount > 0) {
+                await flushPendingToChat(chatId);
+              }
             } else if (text === '/stats') {
               const pendingCount = state.requests.filter((r) => r.status === 'pending').length;
               await callTelegram('sendMessage', {
@@ -284,7 +414,7 @@ Commands:
               });
             } else if (text === '/users') {
               const active = state.requests.filter((r) => r.status === 'accepted');
-              const userList = active.slice(0, 10).map((u, i) => `${i + 1}. <code>${u.traderId}</code> (Token: ..${(u.userToken || '').slice(-4)})`).join('\n') || 'No active users yet.';
+              const userList = active.slice(0, 15).map((u, i) => `${i + 1}. <code>${u.traderId}</code> (Token: ..${(u.userToken || '').slice(-4)})`).join('\n') || 'No active users yet.';
               await callTelegram('sendMessage', {
                 chat_id: chatId,
                 text: `👥 <b>Active Lifetime VIP Traders (${active.length}):</b>\n\n${userList}`,
@@ -304,7 +434,7 @@ Commands:
               } else {
                 await callTelegram('sendMessage', {
                   chat_id: chatId,
-                  text: `⚠️ Trader ID <code>${targetId}</code> not found.`,
+                  text: `⚠️ Trader ID <code>${targetId}</code> not found in database.`,
                   parse_mode: 'HTML',
                 });
               }
@@ -313,13 +443,57 @@ Commands:
               if (pendingList.length === 0) {
                 await callTelegram('sendMessage', {
                   chat_id: chatId,
-                  text: '✨ There are currently no pending Trader ID verification requests.',
+                  text: '✨ <b>No pending verification requests.</b>\nAll submitted Quotex IDs have been processed.',
                   parse_mode: 'HTML',
                 });
               } else {
-                for (const item of pendingList.slice(0, 5)) {
-                  await broadcastTraderRequest(item);
-                }
+                await flushPendingToChat(chatId);
+              }
+            } else if (text.startsWith('/approve ')) {
+              const targetId = text.split(' ')[1]?.trim();
+              const reqItem = state.requests.find((r) => r.traderId === targetId);
+              if (reqItem) {
+                const prev = reqItem.status;
+                reqItem.status = 'accepted';
+                reqItem.isLifetimeActive = true;
+                reqItem.decidedAt = Date.now();
+                reqItem.decisionReason = 'Approved by Telegram Admin via /approve command';
+                if (prev !== 'accepted') state.totalAccepted += 1;
+                saveState();
+                await callTelegram('sendMessage', {
+                  chat_id: chatId,
+                  text: `✅ Trader ID <code>${targetId}</code> APPROVED with VIP Lifetime Access!`,
+                  parse_mode: 'HTML',
+                });
+              } else {
+                await callTelegram('sendMessage', {
+                  chat_id: chatId,
+                  text: `⚠️ Trader ID <code>${targetId}</code> not found in database.`,
+                  parse_mode: 'HTML',
+                });
+              }
+            } else if (text.startsWith('/reject ')) {
+              const targetId = text.split(' ')[1]?.trim();
+              const reqItem = state.requests.find((r) => r.traderId === targetId);
+              if (reqItem) {
+                const prev = reqItem.status;
+                reqItem.status = 'rejected';
+                reqItem.isLifetimeActive = false;
+                reqItem.decidedAt = Date.now();
+                reqItem.decisionReason = 'Rejected by Telegram Admin via /reject command';
+                if (prev !== 'rejected') state.totalRejected += 1;
+                saveState();
+                await callTelegram('sendMessage', {
+                  chat_id: chatId,
+                  text: `❌ Trader ID <code>${targetId}</code> REJECTED.`,
+                  parse_mode: 'HTML',
+                });
+              } else {
+                await callTelegram('sendMessage', {
+                  chat_id: chatId,
+                  text: `⚠️ Trader ID <code>${targetId}</code> not found in database.`,
+                  parse_mode: 'HTML',
+                });
               }
             }
           }
@@ -330,6 +504,11 @@ Commands:
             const data = cb.data || '';
             const chatId = cb.message?.chat?.id;
             const messageId = cb.message?.message_id;
+
+            if (chatId && !state.adminChatIds.includes(chatId)) {
+              state.adminChatIds.push(chatId);
+              saveState();
+            }
 
             if (data === 'view_stats') {
               const pendingCount = state.requests.filter((r) => r.status === 'pending').length;
@@ -378,6 +557,7 @@ Commands:
                     },
                   });
                 }
+                console.log(`[Admin Action] Trader ID ${traderId} ACCEPTED by Telegram Admin in chat ${chatId}`);
               } else {
                 await callTelegram('answerCallbackQuery', {
                   callback_query_id: cb.id,
@@ -423,6 +603,7 @@ Commands:
                     },
                   });
                 }
+                console.log(`[Admin Action] Trader ID ${traderId} REJECTED by Telegram Admin in chat ${chatId}`);
               } else {
                 await callTelegram('answerCallbackQuery', {
                   callback_query_id: cb.id,
@@ -448,6 +629,17 @@ async function createServer() {
   const app = express();
   app.use(express.json());
 
+  // CORS middleware to support any public client origin
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // Check bot auth and start background updater
   checkTelegramBot();
   handleTelegramUpdates();
@@ -457,8 +649,8 @@ async function createServer() {
     syncStateFromFile();
     res.json({
       ok: true,
-      botUsername: botInfo?.username || 'QuotexAdminBot',
-      botFirstName: botInfo?.first_name || 'Quotex Admin Bot',
+      botUsername: botInfo?.username || 'NexGen_Access_Bot',
+      botFirstName: botInfo?.first_name || 'NexGen access',
       isBotConnected: !!botInfo,
       totalAccepted: state.totalAccepted,
       totalRejected: state.totalRejected,
@@ -471,101 +663,122 @@ async function createServer() {
   // Submit Trader ID with strict unique device token locking
   app.post('/api/trader/submit', async (req, res) => {
     syncStateFromFile();
-    const { traderId, userToken } = req.body;
-    if (!traderId || typeof traderId !== 'string' || traderId.trim().length < 3) {
-      return res.status(400).json({ error: 'Please enter a valid Quotex Trader ID.' });
-    }
-
-    const cleanId = traderId.trim();
-    const cleanToken = (userToken || '').trim();
-
-    const existing = state.requests.find((r) => r.traderId === cleanId);
-
-    if (existing) {
-      // PREVENT MULTIPLE USERS FROM USING THE SAME TRADER ID (STRICT DEVICE LOCK)
-      if (existing.userToken && cleanToken && existing.userToken !== cleanToken) {
-        return res.status(403).json({
-          error: 'This Quotex Trader ID is already registered and locked to another user/device. Each Trader ID is strictly limited to 1 user for a lifetime pass. Please create a new account using our referral link or submit your own unique Trader ID.',
-          locked: true,
-        });
+    try {
+      const { traderId, userToken } = req.body;
+      if (!traderId || typeof traderId !== 'string' || traderId.trim().length < 3) {
+        return res.status(400).json({ error: 'Please enter a valid Quotex Trader ID (at least 3 characters).' });
       }
 
-      // If already rejected by Telegram admin:
-      if (existing.status === 'rejected') {
-        return res.status(403).json({
-          error: existing.decisionReason || 'This Trader ID was rejected by the Telegram Admin (deposit of $30+ or KYC not confirmed under lid=2400438). Please register a new Quotex account using our official link.',
-          status: 'rejected',
-          rejected: true,
-        });
-      }
+      const cleanId = traderId.trim();
+      const cleanToken = (userToken || '').trim();
 
-      // If already accepted and matches token (or had no token assigned yet):
-      if (existing.status === 'accepted') {
+      console.log(`[API Submit] Incoming submission for Trader ID: "${cleanId}" (Token: ..${cleanToken.slice(-6)})`);
+
+      const existing = state.requests.find((r) => r.traderId === cleanId);
+
+      if (existing) {
+        // PREVENT MULTIPLE USERS FROM USING THE SAME TRADER ID (STRICT DEVICE LOCK)
+        if (existing.userToken && cleanToken && existing.userToken !== cleanToken) {
+          console.warn(`[API Submit 403] Trader ID "${cleanId}" is already bound to token ..${existing.userToken.slice(-6)}, requested by ..${cleanToken.slice(-6)}`);
+          return res.status(403).json({
+            error: 'This Quotex Trader ID is already registered and locked to another user/device. Each Trader ID is strictly limited to 1 user for a lifetime pass. Please create a new account using our referral link or submit your own unique Trader ID.',
+            locked: true,
+          });
+        }
+
+        // If already rejected by Telegram admin:
+        if (existing.status === 'rejected') {
+          console.warn(`[API Submit 403] Trader ID "${cleanId}" was previously rejected by admin`);
+          return res.status(403).json({
+            error: existing.decisionReason || 'This Trader ID was rejected by the Telegram Admin (deposit of $30+ or KYC not confirmed under lid=2400438). Please register a new Quotex account using our official link.',
+            status: 'rejected',
+            rejected: true,
+          });
+        }
+
+        // If already accepted and matches token (or had no token assigned yet):
+        if (existing.status === 'accepted') {
+          if (!existing.userToken && cleanToken) {
+            existing.userToken = cleanToken;
+            saveState();
+          }
+          console.log(`[API Submit 200] Trader ID "${cleanId}" already accepted. Re-granting dashboard access.`);
+          return res.json({
+            status: 'accepted',
+            traderId: cleanId,
+            userToken: existing.userToken,
+            isLifetimeActive: true,
+            message: 'Verification Completed! Your access is provided.',
+            request: existing,
+          });
+        }
+
+        // If pending on same token:
+        existing.submittedAt = Date.now();
+        existing.status = 'pending';
         if (!existing.userToken && cleanToken) {
           existing.userToken = cleanToken;
-          saveState();
         }
+        saveState();
+        console.log(`[API Submit 200] Trader ID "${cleanId}" re-submitted. Re-broadcasting notification...`);
+        const sent = await broadcastTraderRequest(existing);
+
         return res.json({
-          status: 'accepted',
+          status: 'pending',
           traderId: cleanId,
           userToken: existing.userToken,
-          isLifetimeActive: true,
-          message: 'Verification Completed! Your access is provided.',
+          notificationDelivered: sent,
+          message: 'Your Trader ID is submitted and currently under admin verification. Please wait.',
           request: existing,
         });
       }
 
-      // If pending on same token:
-      existing.submittedAt = Date.now();
-      existing.status = 'pending';
-      if (!existing.userToken && cleanToken) {
-        existing.userToken = cleanToken;
-      }
+      // New request creation: bound to userToken
+      const newReq: TraderRequest = {
+        id: `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        traderId: cleanId,
+        userToken: cleanToken || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        status: 'pending',
+        submittedAt: Date.now(),
+        isLifetimeActive: false,
+        notificationSent: false,
+        telegramMessageIds: [],
+      };
+      state.requests.unshift(newReq);
+
       saveState();
-      broadcastTraderRequest(existing);
+      console.log(`[API Submit 200] New Trader ID "${cleanId}" stored in database as PENDING. Total pending: ${state.totalPending}. Broadcasting alert...`);
+      const sent = await broadcastTraderRequest(newReq);
 
       return res.json({
         status: 'pending',
         traderId: cleanId,
-        userToken: existing.userToken,
+        userToken: newReq.userToken,
+        notificationDelivered: sent,
         message: 'Your Trader ID is submitted and currently under admin verification. Please wait.',
-        request: existing,
+        request: newReq,
       });
+    } catch (err: any) {
+      console.error('[API Submit 500] Unexpected error processing Trader ID submission:', err);
+      return res.status(500).json({ error: 'Internal server error processing Trader ID submission. Please try again.' });
     }
-
-    // New request creation: bound to userToken
-    const newReq: TraderRequest = {
-      id: `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      traderId: cleanId,
-      userToken: cleanToken || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      status: 'pending',
-      submittedAt: Date.now(),
-      isLifetimeActive: false,
-    };
-    state.requests.unshift(newReq);
-
-    saveState();
-    broadcastTraderRequest(newReq);
-
-    res.json({
-      status: 'pending',
-      traderId: cleanId,
-      userToken: newReq.userToken,
-      message: 'Your Trader ID is submitted and currently under admin verification. Please wait.',
-      request: newReq,
-    });
   });
 
   // Check Trader Status with strict revocation & device checks
-  app.get('/api/trader/status/:traderId', (req, res) => {
+  const handleTraderStatus = (req: any, res: any) => {
     syncStateFromFile();
-    const cleanId = req.params.traderId.trim();
-    const token = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+    const cleanId = (req.params.traderId || req.query.traderId || '').toString().trim();
+    const token = (typeof req.query.token === 'string' ? req.query.token : (req.query.userToken as string) || '').trim();
+
+    if (!cleanId) {
+      return res.status(400).json({ error: 'traderId is required' });
+    }
 
     const reqItem = state.requests.find((r) => r.traderId === cleanId);
     if (!reqItem) {
       return res.status(404).json({ status: 'not_found', traderId: cleanId });
     }
+
 
     // Check device lock
     if (token && reqItem.userToken && reqItem.userToken !== token) {
@@ -592,7 +805,10 @@ async function createServer() {
       submittedAt: reqItem.submittedAt,
       decidedAt: reqItem.decidedAt,
     });
-  });
+  };
+
+  app.get('/api/trader/status/:traderId', handleTraderStatus);
+  app.get('/api/trader/status', handleTraderStatus);
 
   // Admin decision endpoint
   app.post('/api/admin/decision', async (req, res) => {

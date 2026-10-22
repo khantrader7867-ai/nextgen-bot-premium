@@ -14,7 +14,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { AdminStats } from '../types';
-import { TELEGRAM_BOT_TOKEN, QUOTEX_REFERRAL_URL } from '../constants/translations';
+import { QUOTEX_REFERRAL_URL } from '../constants/translations';
 
 interface TelegramAdminModalProps {
   isOpen: boolean;
@@ -65,12 +65,11 @@ export const TelegramAdminModal: React.FC<TelegramAdminModalProps> = ({
 
   const pythonScript = `#!/usr/bin/env python3
 # Quotex NextGen Bot - Telegram Admin Bot Daemon
-# Token: ${TELEGRAM_BOT_TOKEN}
 # Referral: ${QUOTEX_REFERRAL_URL}
 
 import urllib.request, json, time, os
 
-BOT_TOKEN = "${TELEGRAM_BOT_TOKEN}"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 REFERRAL_URL = "${QUOTEX_REFERRAL_URL}"
 
 def api_call(method, payload=None):
@@ -101,7 +100,7 @@ print(api_call("getMe"))
                 </span>
               </h2>
               <p className="text-xs text-slate-400 font-mono">
-                Bot Token: {TELEGRAM_BOT_TOKEN.substring(0, 12)}...{TELEGRAM_BOT_TOKEN.substring(TELEGRAM_BOT_TOKEN.length - 6)}
+                Bot Username: @{stats.botInfo?.username || 'NexGen_Access_Bot'} (Server-Managed)
               </p>
             </div>
           </div>

@@ -114,4 +114,3 @@ export const translations = {
 };
 
 export const QUOTEX_REFERRAL_URL = "https://broker-qx.pro/sign-up/?lid=2400438";
-export const TELEGRAM_BOT_TOKEN = "8936376779:AAHrC2nwO1uFGAGBX_uS-s8RaOz_YxfLw0U";

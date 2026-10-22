@@ -12,7 +12,7 @@ import {
   Lock
 } from 'lucide-react';
 import { Language, TraderVerificationState, AdminStats } from './types';
-import { translations, QUOTEX_REFERRAL_URL, TELEGRAM_BOT_TOKEN } from './constants/translations';
+import { translations, QUOTEX_REFERRAL_URL } from './constants/translations';
 import { LanguageSelector } from './components/LanguageSelector';
 import { BackgroundEffect } from './components/BackgroundEffect';
 import { RegistrationFlow } from './components/RegistrationFlow';
@@ -183,9 +183,9 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
 
-      if (res.ok) {
+      if (res.ok && data) {
         setVerification({
           traderId,
           userToken: data.userToken || verification.userToken || deviceToken,
@@ -196,17 +196,12 @@ export default function App() {
         });
         fetchStats();
       } else {
-        setSubmissionError(data.error || 'This Trader ID could not be submitted.');
+        const errorMsg = data?.error || (res.status === 403 ? 'Submission rejected or locked to another device.' : 'This Trader ID could not be submitted. Please check the ID and try again.');
+        setSubmissionError(errorMsg);
       }
-    } catch (e) {
-      // Fallback
-      setVerification({
-        traderId,
-        userToken: deviceToken,
-        status: 'pending',
-        message: 'Your Trader ID is submitted and currently under admin verification.',
-        submittedAt: Date.now(),
-      });
+    } catch (e: any) {
+      console.error('Submission request failed:', e);
+      setSubmissionError('Network error: Unable to connect to verification server. Please check your internet connection and try again.');
     } finally {
       setIsSubmitting(false);
     }

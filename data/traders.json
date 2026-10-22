@@ -1,9 +1,19 @@
 {
   "totalAccepted": 51,
   "totalRejected": 8,
-  "totalPending": 0,
+  "totalPending": 1,
   "adminChatIds": [],
   "requests": [
+    {
+      "id": "req_1792688159632_ne09",
+      "traderId": "55667788",
+      "userToken": "test_device_token",
+      "status": "pending",
+      "submittedAt": 1792688159632,
+      "isLifetimeActive": false,
+      "telegramMessageIds": [],
+      "notificationSent": true
+    },
     {
       "id": "req_1792590575180_sqdz",
       "traderId": "88992211",

@@ -216,6 +216,26 @@ def main():
                                 "parse_mode": "HTML"
                             })
 
+                        elif text == "/pending":
+                            pending = [r for r in data.get("requests", []) if r.get("status") == "pending"]
+                            if not pending:
+                                telegram_api_request("sendMessage", {
+                                    "chat_id": chat_id,
+                                    "text": "⏳ <b>No pending verification requests.</b>\nAll submitted Trader IDs have been reviewed.",
+                                    "parse_mode": "HTML"
+                                })
+                            else:
+                                telegram_api_request("sendMessage", {
+                                    "chat_id": chat_id,
+                                    "text": f"⏳ <b>Found {len(pending)} pending verification request(s):</b>\nReview each request below:",
+                                    "parse_mode": "HTML"
+                                })
+                                for r in pending[:10]:
+                                    tid = r.get("traderId")
+                                    tok = (r.get("userToken") or "")
+                                    broadcast_trader_id(chat_id, tid, tok)
+
+
                         elif text == "/users":
                             active = [r for r in data.get("requests", []) if r.get("status") == "accepted"]
                             lines = []
