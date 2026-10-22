@@ -1,0 +1,6 @@
+{
+  "name": "Quotex NextGen Bot Premium",
+  "description": "Advanced Quotex trading signal platform with Telegram admin verification, OTC & Live market engines, and real-time AI signals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

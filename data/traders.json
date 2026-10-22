@@ -1,0 +1,67 @@
+{
+  "totalAccepted": 51,
+  "totalRejected": 8,
+  "totalPending": 0,
+  "adminChatIds": [],
+  "requests": [
+    {
+      "id": "req_1792590575180_sqdz",
+      "traderId": "88992211",
+      "userToken": "device_token_alpha",
+      "status": "rejected",
+      "submittedAt": 1792590575180,
+      "isLifetimeActive": false,
+      "telegramMessageIds": [],
+      "notificationSent": true,
+      "decidedAt": 1792590588775,
+      "decisionReason": "Deposit not detected under affiliate link"
+    },
+    {
+      "id": "req_1792584372577_882k",
+      "traderId": "7788990",
+      "userToken": "user_device_A",
+      "status": "accepted",
+      "submittedAt": 1792584372577,
+      "isLifetimeActive": true,
+      "telegramMessageIds": [],
+      "notificationSent": true,
+      "decidedAt": 1792584378915,
+      "decisionReason": "Approved by Admin (Lifetime Lock Active)"
+    },
+    {
+      "id": "req_1792583288630_0u7z",
+      "traderId": "2489105",
+      "status": "accepted",
+      "submittedAt": 1792583288630,
+      "telegramMessageIds": [],
+      "notificationSent": true,
+      "decidedAt": 1792583294161,
+      "decisionReason": "Approved by Admin"
+    },
+    {
+      "id": "req_101",
+      "traderId": "6892401",
+      "status": "accepted",
+      "submittedAt": 1792576080474,
+      "decidedAt": 1792576440474,
+      "decisionReason": "Verified under sub-affiliate lid=2400438, $50 deposit confirmed"
+    },
+    {
+      "id": "req_102",
+      "traderId": "9841203",
+      "status": "accepted",
+      "submittedAt": 1792568880474,
+      "decidedAt": 1792569600474,
+      "decisionReason": "Verified KYC & $35 deposit"
+    },
+    {
+      "id": "req_103",
+      "traderId": "1240955",
+      "status": "rejected",
+      "submittedAt": 1792554480474,
+      "decidedAt": 1792554840474,
+      "decisionReason": "Trader ID not registered through referral link"
+    }
+  ],
+  "lastUpdateId": 0
+}
